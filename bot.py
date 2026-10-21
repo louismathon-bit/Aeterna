@@ -1,4 +1,4 @@
-import asyncio
+ximport asyncio
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================================
-# SERVEUR WEB (Pour hébergement Cloud type Render/Discloud)
+# SERVEUR WEB (Pour hébergement Cloud)
 # ============================================================
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -41,9 +41,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 FICHIER_DONNEES = "donnees_bot.json"
 NOM_CATEGORIE_SALONS = "🌿 ESPACES PERSONNELS"
 CATEGORIE_TICKETS = "🎫・TICKETS"
-
-# ID du rôle Staff (optionnel, modifiable selon tes besoins)
-ROLE_STAFF_ID = 0  # Remplace par l'ID de ton rôle staff si tu en as un
+ROLE_STAFF_ID = 0  # Remplace par l'ID de ton rôle staff si besoin
 
 intents = discord.Intents.default()
 intents.members = True
@@ -58,10 +56,10 @@ cache_invitations = {}
 vocal_sessions = {}
 
 # ============================================================
-# GESTION DES DONNÉES
+# GESTION DES DONNÉES ISOLÉES PAR SERVEUR
 # ============================================================
 
-def donnees_par_defaut():
+def structure_guild_defaut():
     return {
         "tournoi_invites": {
             "actif": False,
@@ -88,18 +86,24 @@ def donnees_par_defaut():
 
 def charger_donnees():
     if not os.path.exists(FICHIER_DONNEES):
-        return donnees_par_defaut()
+        return {}
     try:
         with open(FICHIER_DONNEES, "r", encoding="utf-8") as fichier:
-            donnees_chargees = json.load(fichier)
-            defaut = donnees_par_defaut()
-            for cle, valeur in defaut.items():
-                donnees_chargees.setdefault(cle, valeur)
-            return donnees_chargees
+            return json.load(fichier)
     except Exception:
-        return donnees_par_defaut()
+        return {}
 
 donnees = charger_donnees()
+
+def obtenir_donnees_guild(guild_id):
+    gid_str = str(guild_id)
+    if gid_str not in donnees:
+        donnees[gid_str] = structure_guild_defaut()
+    else:
+        defaut = structure_guild_defaut()
+        for cle, valeur in defaut.items():
+            donnees[gid_str].setdefault(cle, valeur)
+    return donnees[gid_str]
 
 def sauvegarder():
     try:
@@ -117,17 +121,6 @@ def est_staff(interaction: discord.Interaction):
         return True
     return False
 
-async def envoyer_log_ticket(guild, embed):
-    log_id = donnees.get("tickets_config", {}).get("channel_logs_id")
-    if not log_id:
-        return
-    log_channel = guild.get_channel(log_id)
-    if log_channel:
-        try:
-            await log_channel.send(embed=embed)
-        except Exception as e:
-            print(f"❌ Erreur envoi log ticket : {e}")
-
 # ============================================================
 # SYSTÈME DE LOGS DES COMMANDES SLASH
 # ============================================================
@@ -139,14 +132,19 @@ async def setup_logs_commandes(interaction: discord.Interaction, salon: discord.
         await interaction.response.send_message("❌ Permission insuffisante.", ephemeral=True)
         return
 
-    donnees.setdefault("logs_config", {})["channel_logs_commandes_id"] = salon.id
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    gdata.setdefault("logs_config", {})["channel_logs_commandes_id"] = salon.id
     sauvegarder()
     await interaction.response.send_message(f"✅ Salon des logs de commandes configuré sur {salon.mention}.", ephemeral=True)
 
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command: app_commands.Command):
-    log_id = donnees.get("logs_config", {}).get("channel_logs_commandes_id")
-    if not log_id or not interaction.guild:
+    if not interaction.guild:
+        return
+
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    log_id = gdata.get("logs_config", {}).get("channel_logs_commandes_id")
+    if not log_id:
         return
 
     log_channel = interaction.guild.get_channel(log_id)
@@ -264,7 +262,7 @@ async def propager_rumeur(interaction: discord.Interaction, rumeur: str):
     await interaction.response.send_message("🤫 Ta rumeur a été propagée en toute discrétion.", ephemeral=True)
 
 # ============================================================
-# SYSTÈME DE SUIVI VOCAL & TOP VOC
+# SYSTÈME DE SUIVI VOCAL & TOP VOC ISOLÉ
 # ============================================================
 
 @bot.event
@@ -272,24 +270,30 @@ async def on_voice_state_update(member, before, after):
     if member.bot:
         return
 
+    guild = before.channel.guild if before.channel else after.channel.guild
+    if not guild:
+        return
+
     now = datetime.now(timezone.utc).timestamp()
     user_id_str = str(member.id)
+    gdata = obtenir_donnees_guild(guild.id)
 
     if before.channel is None and after.channel is not None:
-        vocal_sessions[member.id] = now
+        vocal_sessions[(guild.id, member.id)] = now
     elif before.channel is not None and after.channel is None:
-        start_time = vocal_sessions.pop(member.id, None)
+        start_time = vocal_sessions.pop((guild.id, member.id), None)
         if start_time:
             duree = int(now - start_time)
-            temps_voc = donnees.setdefault("temps_vocal", {})
+            temps_voc = gdata.setdefault("temps_vocal", {})
             temps_voc[user_id_str] = temps_voc.get(user_id_str, 0) + duree
             sauvegarder()
 
 @tree.command(name="top_voc", description="Afficher le classement des membres les plus actifs en vocal")
 async def top_voc(interaction: discord.Interaction):
-    temps_voc = donnees.get("temps_vocal", {})
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    temps_voc = gdata.get("temps_vocal", {})
     if not temps_voc:
-        await interaction.response.send_message("📊 Aucune donnée vocale enregistrée pour le moment.", ephemeral=True)
+        await interaction.response.send_message("📊 Aucune donnée vocale enregistrée sur ce serveur pour le moment.", ephemeral=True)
         return
 
     trie = sorted(temps_voc.items(), key=lambda x: x[1], reverse=True)[:10]
@@ -311,7 +315,7 @@ async def top_voc(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
-# SYSTÈME DE TOURNOI D'INVITATIONS
+# SYSTÈME DE TOURNOI D'INVITATIONS ISOLÉ
 # ============================================================
 
 async def mettre_a_jour_cache_invitations(guild):
@@ -319,31 +323,32 @@ async def mettre_a_jour_cache_invitations(guild):
         invites = await guild.invites()
         cache_invitations[guild.id] = {invite.code: (invite.uses, invite.inviter.id if invite.inviter else None) for invite in invites}
     except Exception as e:
-        print(f"⚠️ Erreur cache invitations : {e}")
+        print(f"⚠️ Erreur cache invitations [{guild.name}] : {e}")
 
 @tasks.loop(minutes=5)
 async def verifier_invitations_en_attente():
-    tournoi = donnees.get("tournoi_invites", {})
-    if not tournoi.get("actif"):
-        return
-
     maintenant = datetime.now(timezone.utc).timestamp()
     delai_24h = 24 * 3600
     modifications = False
-    invitateurs = tournoi.setdefault("invitateurs", {})
 
-    for inviter_id, data in invitateurs.items():
-        en_attente = data.get("en_attente", [])
-        nouveau_en_attente = []
+    for guild_id_str, gdata in donnees.items():
+        tournoi = gdata.get("tournoi_invites", {})
+        if not tournoi.get("actif"):
+            continue
 
-        for item in en_attente:
-            if maintenant - item.get("rejoint_le", maintenant) >= delai_24h:
-                data["validees"] = data.get("validees", 0) + 1
-                modifications = True
-            else:
-                nouveau_en_attente.append(item)
+        invitateurs = tournoi.setdefault("invitateurs", {})
+        for inviter_id, data in invitateurs.items():
+            en_attente = data.get("en_attente", [])
+            nouveau_en_attente = []
 
-        data["en_attente"] = nouveau_en_attente
+            for item in en_attente:
+                if maintenant - item.get("rejoint_le", maintenant) >= delai_24h:
+                    data["validees"] = data.get("validees", 0) + 1
+                    modifications = True
+                else:
+                    nouveau_en_attente.append(item)
+
+            data["en_attente"] = nouveau_en_attente
 
     if modifications:
         sauvegarder()
@@ -356,7 +361,8 @@ async def tournoi_start(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
         return
 
-    tournoi = donnees.setdefault("tournoi_invites", {"actif": False, "invitateurs": {}})
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    tournoi = gdata.setdefault("tournoi_invites", {"actif": False, "invitateurs": {}})
     tournoi["actif"] = True
     tournoi["invitateurs"] = {}
     sauvegarder()
@@ -375,7 +381,8 @@ async def tournoi_stop(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
         return
 
-    tournoi = donnees.setdefault("tournoi_invites", {"actif": False, "invitateurs": {}})
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    tournoi = gdata.setdefault("tournoi_invites", {"actif": False, "invitateurs": {}})
     tournoi["actif"] = False
     sauvegarder()
 
@@ -384,14 +391,13 @@ async def tournoi_stop(interaction: discord.Interaction):
 
 @groupe_tournoi.command(name="classement", description="Afficher le classement des invitateurs")
 async def tournoi_classement(interaction: discord.Interaction):
-    invitateurs = donnees.get("tournoi_invites", {}).get("invitateurs", {})
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    invitateurs = gdata.get("tournoi_invites", {}).get("invitateurs", {})
     if not invitateurs:
         await interaction.response.send_message("📊 Aucune invitation enregistrée pour le moment.", ephemeral=True)
         return
 
     trie = sorted(invitateurs.items(), key=lambda x: (x[1].get("validees", 0), len(x[1].get("en_attente", []))), reverse=True)[:10]
-    
-    # CORRECTION ICI : Utilisation correcte d'enumerate sur le tuple trié
     lignes = [f"`#{i+1}` <@{uid}> — **{data.get('validees', 0)}** validée(s)" for i, (uid, data) in enumerate(trie)]
 
     embed = discord.Embed(title="🏆 Classement du Tournoi", description="\n".join(lignes), color=0xF1C40F)
@@ -402,7 +408,8 @@ tree.add_command(groupe_tournoi)
 @tree.command(name="invites", description="Consulter tes statistiques d'invitations")
 async def consulter_invites(interaction: discord.Interaction, joueur: discord.Member = None):
     cible = joueur or interaction.user
-    data = donnees.get("tournoi_invites", {}).get("invitateurs", {}).get(str(cible.id), {"validees": 0, "en_attente": []})
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    data = gdata.get("tournoi_invites", {}).get("invitateurs", {}).get(str(cible.id), {"validees": 0, "en_attente": []})
 
     embed = discord.Embed(title=f"📩 Invitations de {cible.display_name}", color=0x3498DB)
     embed.add_field(name="✅ Validées (24h+)", value=f"**{data.get('validees', 0)}**", inline=True)
@@ -414,12 +421,13 @@ async def on_member_join(member):
     if member.bot:
         return
     
-    stats = donnees.setdefault("statistiques", {})
+    gdata = obtenir_donnees_guild(member.guild.id)
+    stats = gdata.setdefault("statistiques", {})
     stats["aujourdhui_plus"] = stats.get("aujourdhui_plus", 0) + 1
     stats["semaine_plus"] = stats.get("semaine_plus", 0) + 1
     sauvegarder()
 
-    tournoi = donnees.get("tournoi_invites", {})
+    tournoi = gdata.get("tournoi_invites", {})
     if tournoi.get("actif"):
         guild = member.guild
         invites_avant = cache_invitations.get(guild.id, {})
@@ -444,12 +452,13 @@ async def on_member_remove(member):
     if member.bot:
         return
     
-    stats = donnees.setdefault("statistiques", {})
+    gdata = obtenir_donnees_guild(member.guild.id)
+    stats = gdata.setdefault("statistiques", {})
     stats["aujourdhui_moins"] = stats.get("aujourdhui_moins", 0) + 1
     stats["semaine_moins"] = stats.get("semaine_moins", 0) + 1
     sauvegarder()
 
-    tournoi = donnees.get("tournoi_invites", {})
+    tournoi = gdata.get("tournoi_invites", {})
     if tournoi.get("actif"):
         modifs = False
         for inviter_id, data in tournoi.get("invitateurs", {}).items():
@@ -461,65 +470,69 @@ async def on_member_remove(member):
             sauvegarder()
 
 # ============================================================
-# TABLEAU DE BORD DYNAMIQUE
+# TABLEAU DE BORD DYNAMIQUE ISOLÉ
 # ============================================================
 
 @tasks.loop(minutes=1)
 async def update_tableau_de_board():
-    board_config = donnees.get("tableau_bord", {})
-    channel_id = board_config.get("channel_id")
-    message_id = board_config.get("message_id")
+    for guild in bot.guilds:
+        gdata = obtenir_donnees_guild(guild.id)
+        board_config = gdata.get("tableau_bord", {})
+        channel_id = board_config.get("channel_id")
+        message_id = board_config.get("message_id")
 
-    if not channel_id or not message_id or not bot.guilds:
-        return
+        if not channel_id or not message_id:
+            continue
 
-    guild = bot.guilds[0]
-    channel = guild.get_channel(channel_id)
-    if not channel:
-        return
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            continue
 
-    try:
-        message = await channel.fetch_message(message_id)
-    except Exception:
-        return
+        try:
+            message = await channel.fetch_message(message_id)
+        except Exception:
+            continue
 
-    total_membres = guild.member_count
-    stats = donnees.setdefault("statistiques", {})
+        total_membres = guild.member_count
+        stats = gdata.setdefault("statistiques", {})
 
-    aujourdhui_plus = stats.get("aujourdhui_plus", 0)
-    aujourdhui_moins = stats.get("aujourdhui_moins", 0)
-    semaine_plus = stats.get("semaine_plus", 0)
-    semaine_moins = stats.get("semaine_moins", 0)
+        aujourdhui_plus = stats.get("aujourdhui_plus", 0)
+        aujourdhui_moins = stats.get("aujourdhui_moins", 0)
+        semaine_plus = stats.get("semaine_plus", 0)
+        semaine_moins = stats.get("semaine_moins", 0)
 
-    record_membres = stats.get("record_membres", total_membres)
-    if total_membres > record_membres:
-        record_membres = total_membres
-        stats["record_membres"] = record_membres
-        sauvegarder()
+        record_membres = stats.get("record_membres", total_membres)
+        if total_membres > record_membres:
+            record_membres = total_membres
+            stats["record_membres"] = record_membres
+            sauvegarder()
 
-    historique = stats.setdefault("historique_7j", {})
-    date_aujourdhui = datetime.now(timezone.utc).strftime("%m-%d")
-    historique[date_aujourdhui] = total_membres
+        historique = stats.setdefault("historique_7j", {})
+        date_aujourdhui = datetime.now(timezone.utc).strftime("%m-%d")
+        historique[date_aujourdhui] = total_membres
 
-    cles_triees = sorted(historique.keys())[-7:]
-    lignes_evolution = [f"{date} : {historique[date]}" for date in cles_triees]
-    texte_evolution = "\n".join(lignes_evolution) if lignes_evolution else f"{date_aujourdhui} : {total_membres}"
+        cles_triees = sorted(historique.keys())[-7:]
+        lignes_evolution = [f"{date} : {historique[date]}" for date in cles_triees]
+        texte_evolution = "\n".join(lignes_evolution) if lignes_evolution else f"{date_aujourdhui} : {total_membres}"
 
-    contenu_message = (
-        "📈 **TABLEAU DE BORD DU SERVEUR**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "👥 **STATISTIQUES DISCORD**\n"
-        f"• Membres actuels : {total_membres}\n"
-        f"• Aujourd'hui : +{aujourdhui_plus} / -{aujourdhui_moins}\n"
-        f"• Cette semaine : +{semaine_plus} / -{semaine_moins}\n"
-        f"• Record de membres : {record_membres}\n\n"
-        "📊 **ÉVOLUTION DES MEMBRES — 7 JOURS**\n"
-        f"{texte_evolution}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "*Mise à jour automatique toutes les minutes*"
-    )
+        contenu_message = (
+            "📈 **TABLEAU DE BORD DU SERVEUR**\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "👥 **STATISTIQUES DISCORD**\n"
+            f"• Membres actuels : {total_membres}\n"
+            f"• Aujourd'hui : +{aujourdhui_plus} / -{aujourdhui_moins}\n"
+            f"• Cette semaine : +{semaine_plus} / -{semaine_moins}\n"
+            f"• Record de membres : {record_membres}\n\n"
+            "📊 **ÉVOLUTION DES MEMBRES — 7 JOURS**\n"
+            f"{texte_evolution}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "*Mise à jour automatique toutes les minutes*"
+        )
 
-    await message.edit(content=contenu_message)
+        try:
+            await message.edit(content=contenu_message)
+        except Exception as e:
+            print(f"❌ Erreur mise à jour tableau de bord [{guild.name}] : {e}")
 
 @tree.command(name="setup_tableau_de_bord", description="[STAFF] Initialiser le message du tableau de bord")
 async def setup_tableau_de_bord(interaction: discord.Interaction):
@@ -528,7 +541,8 @@ async def setup_tableau_de_bord(interaction: discord.Interaction):
         return
 
     msg = await interaction.channel.send("⌛ *Initialisation du tableau de bord...*")
-    donnees["tableau_bord"] = {
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    gdata["tableau_bord"] = {
         "channel_id": interaction.channel.id,
         "message_id": msg.id,
     }
@@ -540,7 +554,7 @@ async def setup_tableau_de_bord(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Tableau de bord créé et configuré dans ce salon !", ephemeral=True)
 
 # ============================================================
-# SYSTÈME DE TICKETS DÉTAILLÉ
+# SYSTÈME DE TICKETS ISOLÉ
 # ============================================================
 
 class MenuChoixTicket(discord.ui.Select):
@@ -560,8 +574,9 @@ class MenuChoixTicket(discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
         type_ticket = self.values[0]
         membre = interaction.user
+        gdata = obtenir_donnees_guild(interaction.guild_id)
 
-        log_id = donnees.get("tickets_config", {}).get("channel_logs_id")
+        log_id = gdata.get("tickets_config", {}).get("channel_logs_id")
         if not log_id:
             await interaction.followup.send("❌ Le salon de logs des tickets n'a pas été configuré (`/setup_logs_tickets`).", ephemeral=True)
             return
@@ -602,6 +617,7 @@ class ValiderTicketView(discord.ui.View):
 
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
+        gdata = obtenir_donnees_guild(guild.id)
         embed_log = interaction.message.embeds[0]
 
         membre = guild.get_member(self.membre_id)
@@ -626,7 +642,7 @@ class ValiderTicketView(discord.ui.View):
 
         salon_ticket = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=permissions)
 
-        donnees.setdefault("tickets_config", {}).setdefault("tickets_actifs", {})[str(salon_ticket.id)] = {
+        gdata.setdefault("tickets_config", {}).setdefault("tickets_actifs", {})[str(salon_ticket.id)] = {
             "owner_id": membre.id,
             "type": self.type_ticket,
             "ouvert_a": datetime.now(timezone.utc).isoformat(),
@@ -677,7 +693,8 @@ class FermerTicketView(discord.ui.View):
     async def fermer_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("🔒 Fermeture du ticket dans 5 secondes...")
         channel_id_str = str(interaction.channel.id)
-        tickets_actifs = donnees.get("tickets_config", {}).get("tickets_actifs", {})
+        gdata = obtenir_donnees_guild(interaction.guild_id)
+        tickets_actifs = gdata.get("tickets_config", {}).get("tickets_actifs", {})
         
         if channel_id_str in tickets_actifs:
             del tickets_actifs[channel_id_str]
@@ -693,7 +710,8 @@ async def setup_logs_tickets(interaction: discord.Interaction, salon: discord.Te
         await interaction.response.send_message("❌ Permission insuffisante.", ephemeral=True)
         return
 
-    donnees.setdefault("tickets_config", {})["channel_logs_id"] = salon.id
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    gdata.setdefault("tickets_config", {})["channel_logs_id"] = salon.id
     sauvegarder()
     await interaction.response.send_message(f"✅ Salon des logs de tickets configuré sur {salon.mention}.", ephemeral=True)
 
