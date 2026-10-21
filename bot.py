@@ -390,7 +390,9 @@ async def tournoi_classement(interaction: discord.Interaction):
         return
 
     trie = sorted(invitateurs.items(), key=lambda x: (x[1].get("validees", 0), len(x[1].get("en_attente", []))), reverse=True)[:10]
-    lignes = [f"`#{i+1}` <@{uid}> — **{data.get('validees', 0)}** validée(s)" for i, (uid, data)]
+    
+    # CORRECTION ICI : Utilisation correcte d'enumerate sur le tuple trié
+    lignes = [f"`#{i+1}` <@{uid}> — **{data.get('validees', 0)}** validée(s)" for i, (uid, data) in enumerate(trie)]
 
     embed = discord.Embed(title="🏆 Classement du Tournoi", description="\n".join(lignes), color=0xF1C40F)
     await interaction.response.send_message(embed=embed)
