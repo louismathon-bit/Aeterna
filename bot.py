@@ -1,4 +1,4 @@
-ximport asyncio
+import asyncio
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -71,6 +71,10 @@ def structure_guild_defaut():
         },
         "logs_config": {
             "channel_logs_commandes_id": None
+        },
+        "bienvenue_config": {
+            "channel_id": None,
+            "image_url": "https://cdn.discordapp.com/attachments/1562774447520223283/1562836239730741298/Capture_decran_2026-10-03_011747.png"
         },
         "tableau_bord": {"channel_id": None, "message_id": None},
         "statistiques": {
@@ -416,20 +420,65 @@ async def consulter_invites(interaction: discord.Interaction, joueur: discord.Me
     embed.add_field(name="⏳ En attente", value=f"**{len(data.get('en_attente', []))}**", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ============================================================
+# SYSTÈMES DE BIENVENUE & ÉVÉNEMENTS MEMBRES
+# ============================================================
+
+@tree.command(name="setup_bienvenue", description="[STAFF] Configurer le salon et l'image de bienvenue")
+@app_commands.describe(salon="Le salon textuel de bienvenue", image_url="Lien direct de l'image de fond")
+async def setup_bienvenue(interaction: discord.Interaction, salon: discord.TextChannel, image_url: str = None):
+    if not est_staff(interaction):
+        await interaction.response.send_message("❌ Permission insuffisante.", ephemeral=True)
+        return
+
+    gdata = obtenir_donnees_guild(interaction.guild_id)
+    current_image = image_url or gdata.get("bienvenue_config", {}).get("image_url", "https://cdn.discordapp.com/attachments/1562774447520223283/1562836239730741298/Capture_decran_2026-10-03_011747.png")
+    
+    gdata["bienvenue_config"] = {
+        "channel_id": salon.id,
+        "image_url": current_image
+    }
+    sauvegarder()
+    await interaction.response.send_message(f"✅ Salon de bienvenue configuré sur {salon.mention} avec l'image Minecraft !", ephemeral=True)
+
 @bot.event
 async def on_member_join(member):
     if member.bot:
         return
     
-    gdata = obtenir_donnees_guild(member.guild.id)
+    guild = member.guild
+    gdata = obtenir_donnees_guild(guild.id)
+    
+    # 1. Message de bienvenue style Draftbot avec l'image Minecraft
+    bienvenue_conf = gdata.get("bienvenue_config", {})
+    channel_id = bienvenue_conf.get("channel_id")
+    image_url = bienvenue_conf.get("image_url")
+
+    if channel_id:
+        channel = guild.get_channel(channel_id)
+        if channel:
+            embed = discord.Embed(
+                title="Ho ! Un nouveau membre !",
+                description=f"🎉 Bienvenue {member.mention} !",
+                color=0xE74C3C
+            )
+            if image_url:
+                embed.set_image(url=image_url)
+            
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                print(f"❌ Erreur envoi bienvenue [{guild.name}] : {e}")
+
+    # 2. Statistiques de membres
     stats = gdata.setdefault("statistiques", {})
     stats["aujourdhui_plus"] = stats.get("aujourdhui_plus", 0) + 1
     stats["semaine_plus"] = stats.get("semaine_plus", 0) + 1
     sauvegarder()
 
+    # 3. Tournoi d'invitations
     tournoi = gdata.get("tournoi_invites", {})
     if tournoi.get("actif"):
-        guild = member.guild
         invites_avant = cache_invitations.get(guild.id, {})
         try:
             invites_apres = await guild.invites()
